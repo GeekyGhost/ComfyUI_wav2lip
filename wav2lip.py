@@ -11,8 +11,6 @@ from pathlib import Path
 import subprocess
 import hashlib
 
-# Removed unused imports: pydub, soundfile, subprocess
-
 def find_folder(base_path, folder_name):
     for root, dirs, files in os.walk(base_path):
         if folder_name in dirs:
@@ -30,10 +28,11 @@ print(f"Base directory: {base_dir}")
 checkpoints_path = find_folder(base_dir, "checkpoints")
 print(f"Checkpoints path: {checkpoints_path}")
 
-wav2lip_model_file = "wav2lip_gan.pth"
-model_exists, model_path = check_model_in_folder(checkpoints_path, wav2lip_model_file)
-print(f"Model path: {model_path}")
-assert model_exists, f"Model {wav2lip_model_file} not found in {checkpoints_path}"
+wav2lip_model_files = ["wav2lip.pth", "wav2lip_gan.pth"]
+for model_file in wav2lip_model_files:
+    model_exists, model_path = check_model_in_folder(checkpoints_path, model_file)
+    print(f"Model path for {model_file}: {model_path}")
+    assert model_exists, f"Model {model_file} not found in {checkpoints_path}"
 
 current_dir = Path(__file__).resolve().parent
 wav2lip_path = current_dir / "wav2lip"
@@ -56,10 +55,8 @@ print(f"Wav2Lip path: {wav2lip_path}")
 
 from .Wav2Lip.wav2lip_node import wav2lip_
 
-# Removed process_audio, get_ffmpeg_path, get_audio, validate_path, hash_path functions
-
 import hashlib
-import folder_paths  # Assuming folder_paths is a module you have for handling paths
+import folder_paths
 
 class LoadAudio:
     @classmethod
@@ -105,7 +102,8 @@ class Wav2Lip:
                 "images": ("IMAGE",),
                 "mode": (["sequential", "repetitive"], {"default": "sequential"}),
                 "face_detect_batch": ("INT", {"default": 8, "min": 1, "max": 100}),
-                "audio": ("AUDIO", )
+                "audio": ("AUDIO", ),
+                "model": (["wav2lip", "wav2lip_gan"], {"default": "wav2lip"})
             },
         }
 
@@ -115,7 +113,7 @@ class Wav2Lip:
     RETURN_NAMES = ("images", "audio", )
     FUNCTION = "process"
 
-    def process(self, images, mode, face_detect_batch, audio):
+    def process(self, images, mode, face_detect_batch, audio, model):
         in_img_list = []
         for i in images:
             in_img = i.numpy().squeeze()
@@ -125,22 +123,18 @@ class Wav2Lip:
         if audio is None or "waveform" not in audio or "sample_rate" not in audio:
             raise ValueError("Valid audio input is required.")
 
-        waveform = audio["waveform"].squeeze(0).numpy()  # Expected shape: [channels, samples]
+        waveform = audio["waveform"].squeeze(0).numpy()
         sample_rate = audio["sample_rate"]
 
-        # Step 1: Convert to Mono if Necessary
         if waveform.ndim == 2 and waveform.shape[0] > 1:
-            # Average the channels to convert to mono
             waveform = waveform.mean(axis=0)
             print(f"Converted multi-channel audio to mono. New shape: {waveform.shape}")
         elif waveform.ndim == 2 and waveform.shape[0] == 1:
-            # Already mono, remove the channel dimension
             waveform = waveform.squeeze(0)
             print(f"Audio is already mono. Shape: {waveform.shape}")
         elif waveform.ndim != 1:
             raise ValueError(f"Unsupported waveform shape: {waveform.shape}")
 
-        # Step 2: Ensure the Sample Rate is 16000 Hz
         if sample_rate != 16000:
             resampler = torchaudio.transforms.Resample(orig_freq=sample_rate, new_freq=16000)
             waveform_tensor = torch.tensor(waveform)
@@ -148,26 +142,23 @@ class Wav2Lip:
             sample_rate = 16000
             print(f"Resampled audio to {sample_rate} Hz.")
 
-        # Step 3: Normalize the Waveform to [-1, 1]
         waveform = waveform.astype(np.float32)
         max_val = np.abs(waveform).max()
         if max_val > 0:
             waveform /= max_val
         print(f"Normalized waveform. Max value after normalization: {np.abs(waveform).max()}")
 
-        # Step 4: Save the Waveform to a Temporary WAV File
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_audio:
             temp_audio_path = temp_audio.name
-            # Convert waveform back to tensor and ensure it's 2D [1, samples]
-            waveform_tensor = torch.tensor(waveform).unsqueeze(0)  # Shape: [1, samples]
+            waveform_tensor = torch.tensor(waveform).unsqueeze(0)
             torchaudio.save(temp_audio_path, waveform_tensor, sample_rate)
             print(f"Saved temporary audio file at {temp_audio_path}")
 
         try:
-            # Process with Wav2Lip model
+            model_path = os.path.join(checkpoints_path, f"{model}.pth")
             out_img_list = wav2lip_(in_img_list, temp_audio_path, face_detect_batch, mode, model_path)
         finally:
-            os.unlink(temp_audio_path)  # Ensure temporary file is deleted
+            os.unlink(temp_audio_path)
             print(f"Deleted temporary audio file at {temp_audio_path}")
 
         out_tensor_list = []
@@ -178,9 +169,7 @@ class Wav2Lip:
 
         images = torch.stack(out_tensor_list, dim=0)
 
-        # Return the processed images and the original audio
         return (images, audio,)
-
 
 NODE_CLASS_MAPPINGS = {
     "Wav2Lip": Wav2Lip,
