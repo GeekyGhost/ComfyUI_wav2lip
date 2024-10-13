@@ -1,5 +1,5 @@
 # ComfyUI_wav2lip
-
+ gan model - https://civitai.com/models/850790/wav2lipgan
 
 ## Wav2Lip Node for ComfyUI
 
